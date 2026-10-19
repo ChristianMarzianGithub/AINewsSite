@@ -1,0 +1,145 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Article {
+  id                String   @id @default(cuid())
+  slug              String   @unique
+  title             String
+  subtitle          String   @default("")
+  summary           String   @default("")
+  body              String   @default("")
+  category          String
+  tags              String   @default("[]")
+  articleType       String   @default("NACHRICHT")
+  status            String   @default("DRAFT")
+  featured          Boolean  @default(false)
+  imageUrl          String?
+  imageCaption      String?
+  imageCredit       String?
+  aiGenerated       Boolean  @default(false)
+  disclosureEnabled Boolean  @default(false)
+  claimsToVerify    String   @default("[]")
+  personaId         String?
+  persona           Persona? @relation(fields: [personaId], references: [id], onDelete: SetNull)
+  researchId        String?
+  research          ResearchSession? @relation(fields: [researchId], references: [id], onDelete: SetNull)
+  sources           ArticleSource[]
+  revisions         ArticleRevision[]
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  publishedAt       DateTime?
+
+  @@index([status, publishedAt])
+  @@index([category, status])
+}
+
+model Persona {
+  id                   String @id @default(cuid())
+  name                 String @unique
+  age                  Int?
+  background           String @default("")
+  politicalOrientation String @default("")
+  values               String @default("")
+  writingStyle         String @default("")
+  perspective          String @default("")
+  instructions         String @default("")
+  articles             Article[]
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+}
+
+model ResearchSession {
+  id              String @id @default(cuid())
+  title           String
+  topic           String
+  questions       String @default("")
+  depth           String @default("STANDARD")
+  timeRange       String @default("7d")
+  geographicFocus String @default("Deutschland")
+  summary         String @default("")
+  conflicts       String @default("[]")
+  missingInfo     String @default("[]")
+  timeline        String @default("[]")
+  perspectives    String @default("[]")
+  status          String @default("PENDING")
+  model           String?
+  liveSearch      Boolean @default(false)
+  searchedAt      DateTime?
+  sources         ResearchSource[]
+  facts           ResearchFact[]
+  notes           ResearchNote[]
+  articles        Article[]
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model ResearchSource {
+  id                String @id @default(cuid())
+  researchSessionId String
+  researchSession   ResearchSession @relation(fields: [researchSessionId], references: [id], onDelete: Cascade)
+  title             String
+  publisher         String?
+  url               String
+  publishedAt       DateTime?
+  retrievedAt       DateTime @default(now())
+  summary           String @default("")
+  sourceType        String @default("Web")
+  included          Boolean @default(true)
+  notes             String @default("")
+  facts             FactSource[]
+  articles          ArticleSource[]
+
+  @@unique([researchSessionId, url])
+}
+
+model ResearchFact {
+  id                String @id @default(cuid())
+  researchSessionId String
+  researchSession   ResearchSession @relation(fields: [researchSessionId], references: [id], onDelete: Cascade)
+  claim             String
+  verificationStatus String @default("UNVERIFIED")
+  notes             String @default("")
+  sources           FactSource[]
+  createdAt         DateTime @default(now())
+}
+
+model FactSource {
+  factId   String
+  sourceId String
+  relation String @default("SUPPORTS")
+  fact     ResearchFact @relation(fields: [factId], references: [id], onDelete: Cascade)
+  source   ResearchSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  @@id([factId, sourceId])
+}
+
+model ArticleSource {
+  articleId String
+  sourceId  String
+  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  source    ResearchSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  @@id([articleId, sourceId])
+}
+
+model ResearchNote {
+  id                String @id @default(cuid())
+  researchSessionId String
+  researchSession   ResearchSession @relation(fields: [researchSessionId], references: [id], onDelete: Cascade)
+  content           String
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+model ArticleRevision {
+  id        String @id @default(cuid())
+  articleId String
+  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  title     String
+  body      String
+  createdAt DateTime @default(now())
+}
