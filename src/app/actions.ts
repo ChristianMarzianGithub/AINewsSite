@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { checkPassword, endSession, loginIp, requireAction, startSession } from "@/lib/auth";
 import { articleSchema, personaSchema, researchSchema } from "@/lib/validation";
-import { liveResearch, writeDraft } from "@/lib/ai";
+import { draftError, liveResearch, researchError, writeDraft } from "@/lib/ai";
 import { slugify } from "@/lib/constants";
 import { canTransition } from "@/lib/workflow";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -89,7 +89,10 @@ export async function startResearch(form: FormData) {
     for (const [url, title] of citations) await db.researchSource.create({ data: { researchSessionId: session.id, url, title, publisher: new URL(url).hostname } });
     const sources = await db.researchSource.findMany({ where: { researchSessionId: session.id } });
     for (const fact of dossier.facts) await db.researchFact.create({ data: { researchSessionId: session.id, claim: fact.claim, notes: fact.notes, verificationStatus: fact.verificationStatus, sources: { create: fact.sourceUrls.flatMap(url => { const source = sources.find(s => s.url === url); return source ? [{ sourceId: source.id }] : []; }) } } });
-  } catch (error) { await db.researchSession.update({ where: { id: session.id }, data: { status: "FAILED", summary: error instanceof Error ? error.message : "Recherche fehlgeschlagen." } }); }
+  } catch (error) {
+    console.error("Research failed", { sessionId: session.id, errorType: error instanceof Error ? error.constructor.name : "unknown", status: error instanceof OpenAI.APIError ? error.status : undefined });
+    await db.researchSession.update({ where: { id: session.id }, data: { status: "FAILED", summary: researchError(error) } });
+  }
   redirect(`/admin/research/${session.id}`);
 }
 export async function addSource(form: FormData) { await requireAction(); const id = str(form,"researchId"); const url = checkUrl(str(form,"url")); await db.researchSource.upsert({ where: { researchSessionId_url: { researchSessionId: id, url } }, update: { included: true }, create: { researchSessionId: id, url, title: str(form,"title") || new URL(url).hostname, publisher: new URL(url).hostname, notes: str(form,"notes") } }); revalidatePath(`/admin/research/${id}`); }
@@ -108,10 +111,17 @@ export async function testOpenAIConnection() {
 }
 export async function generateArticle(form: FormData) {
   await requireAction(); const researchId = str(form,"researchId"); const research = researchId ? await db.researchSession.findUnique({ where: { id: researchId }, include: { facts: { include: { sources: { include: { source: true } } } }, sources: true } }) : null;
+  if (researchId && (!research || research.status !== "COMPLETE" || !research.liveSearch)) throw new Error("Bitte eine abgeschlossene Live-Recherche auswählen.");
   const personaId = str(form,"personaId"); const persona = personaId ? await db.persona.findUnique({ where: { id: personaId } }) : null;
   const sourceIds = research?.sources.filter(s => s.included).map(s => s.id) ?? [];
-  const evidence = research ? JSON.stringify({ searchedAt: research.searchedAt, facts: research.facts.map(f => ({ claim: f.claim, status: f.verificationStatus, sources: f.sources.map(s => s.source.url).filter(url => research.sources.some(source => source.url === url && source.included)) })), sourceUrls: research.sources.filter(s => s.included).map(s => s.url) }) : undefined;
-  const draft = await writeDraft({ topic: str(form,"topic") || research?.topic || "", persona: persona ? `${persona.name}: ${persona.writingStyle}; ${persona.perspective}; ${persona.instructions}` : "Neutral", type: str(form,"articleType"), length: str(form,"length"), instructions: str(form,"instructions"), research: evidence });
+  const evidence = research ? JSON.stringify({ searchedAt: research.searchedAt, facts: research.facts.map(f => ({ claim: f.claim, status: f.verificationStatus, sources: f.sources.map(s => s.source.url).filter(url => research.sources.some(source => source.url === url && source.included)) })).filter(f => f.sources.length), sourceUrls: research.sources.filter(s => s.included).map(s => s.url) }) : undefined;
+  let draft: Awaited<ReturnType<typeof writeDraft>>;
+  try {
+    draft = await writeDraft({ topic: str(form,"topic") || research?.topic || "", persona: persona ? `${persona.name}: ${persona.writingStyle}; ${persona.perspective}; ${persona.instructions}` : "Neutral", type: str(form,"articleType"), length: str(form,"length"), instructions: str(form,"instructions"), research: evidence });
+  } catch (error) {
+    console.error("Article generation failed", { researchId, errorType: error instanceof Error ? error.constructor.name : "unknown", status: error instanceof OpenAI.APIError ? error.status : undefined });
+    redirect(`/admin/ai-generator?researchId=${encodeURIComponent(researchId)}&error=${encodeURIComponent(draftError(error))}`);
+  }
   const category = str(form,"category") || "Gesellschaft";
   const article = await db.article.create({ data: { slug: `${slugify(draft.title)}-${Math.random().toString(36).slice(2,7)}`, title: draft.title, subtitle: draft.subtitle, summary: draft.summary, body: draft.body, category, articleType: str(form,"articleType") || "Analyse", tags: JSON.stringify(draft.tags), claimsToVerify: JSON.stringify(draft.claimsToVerify), personaId: persona?.id, researchId: research?.id, aiGenerated: true, disclosureEnabled: true, status: "GENERATED", sources: { create: draft.sourceUrls.flatMap(url => { const source = research?.sources.find(s => s.url === url && sourceIds.includes(s.id)); return source ? [{ sourceId: source.id }] : []; }) } } });
   redirect(`/admin/articles/${article.id}`);
